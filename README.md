@@ -1,8 +1,54 @@
-# benchmark
+<p align="center">
+  <img src="docs/assets/benchmark.svg" alt="benchmark — Go-style benchmarking for Zig">
+</p>
 
-A Zig benchmark runner modeled after Go's `testing.B`.
+[![Zig](https://img.shields.io/badge/Zig-0.15.2-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-The usual API is a generated benchmark executable wired from `build.zig`. Your project provides a module full of exported benchmark functions; `benchmark` provides the `main`, CLI parsing, environment headers, result formatting, and runner logic.
+A Go-style benchmark module for Zig: predictable harnesses, stable `ns/op` output, allocation metrics, sub-benchmarks, parallel runs, and `benchstat`-friendly results without each project growing its own half-haunted benchmark runner.
+
+```zig
+const bench = @import("benchmark");
+
+pub fn benchmarkHash(b: *bench.B) !void {
+    const input = b.blackBox("hello" ** 64);
+    var out: u64 = 0;
+
+    while (try b.loop()) {
+        out = hash(input);
+    }
+
+    b.keepAlive(out);
+    b.setBytes(input.len);
+}
+```
+
+```text
+zig_os: macos
+zig_arch: aarch64
+zig_cpu: apple_m1
+zig_mode: ReleaseFast
+BenchmarkAsciiCount/Scalar    96475    626.6 ns/op    5719.41 MB/s       0 B/op    0 allocs/op
+BenchmarkAsciiCount/Table     71222    848.7 ns/op    4223.06 MB/s       0 B/op    0 allocs/op
+BenchmarkAllocPerLine        113122    531.8 ns/op       2096 B/op       4 allocs/op
+```
+
+If you know Go's `testing.B`, this should feel familiar. If you do not, the important bit is simpler: write a function, call `b.loop()`, get useful numbers.
+
+## Why use it?
+
+Zig gives you the primitives to measure code, but every project still needs the same boring harness pieces: warmup, iteration scaling, timer controls, CLI flags, allocation counting, environment metadata, formatting, filtering, and repeat runs. This module packages those pieces behind a small API so your benchmark files stay focused on the thing being measured.
+
+It gives you:
+
+- automatic discovery of exported `benchmarkFoo` / `BenchmarkFoo` functions
+- `b.loop()` timing that excludes setup and cleanup by default
+- old-school `b.n` support when you want direct iteration control
+- `b.keepAlive` and `b.blackBox` helpers to fight optimizer lies
+- `b.setBytes`, `b.reportMetric`, `B/op`, and `allocs/op`
+- sub-benchmarks named with `/`, shaped for `benchstat`
+- `runParallel` for concurrent workloads
+- build-system helpers that generate the benchmark executable for you
 
 ## Add it to a project
 
