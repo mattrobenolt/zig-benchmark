@@ -455,7 +455,7 @@ pub const B = struct {
         defer self.internal_allocator.free(full_name);
 
         if (self.filter_pattern) |pattern| {
-            if (!filter.matches(pattern, self.name) and !filter.matches(pattern, full_name)) return true;
+            if (!filter.matchesAny(pattern, self.name) and !filter.matchesAny(pattern, full_name)) return true;
         }
 
         var sub: B = try .init(self.internal_allocator, func, .{
@@ -694,7 +694,7 @@ pub fn runBenchmarks(allocator: Allocator, benchmarks: []const Spec, options: Op
     var ok = true;
     for (benchmarks) |entry| {
         if (options.filter) |pattern| {
-            if (!filter.matches(pattern, entry.name) and !filter.mayMatchChild(pattern, entry.name)) continue;
+            if (!filter.matchesAny(pattern, entry.name) and !filter.mayMatchAnyChild(pattern, entry.name)) continue;
         }
 
         var i: usize = 0;
@@ -733,7 +733,7 @@ pub fn printUsage(writer: *Io.Writer) !void {
         \\  -p N, -pN, --parallelism N         default B.runParallel multiplier
         \\  --no-env                           suppress environment header lines
         \\
-        \\Durations use ns, us, µs, ms, s, m, or h. Filters are glob-like:
+        \\Durations use ns, us, µs, ms, s, m, or h. Filters are comma-separated glob-like patterns:
         \\plain text contains, ^ anchors start, $ anchors end, * matches any bytes.
         \\
     );

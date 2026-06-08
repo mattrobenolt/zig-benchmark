@@ -2,6 +2,16 @@ const std = @import("std");
 const mem = std.mem;
 const testing = std.testing;
 
+pub fn matchesAny(patterns: []const u8, name: []const u8) bool {
+    var it = mem.splitScalar(u8, patterns, ',');
+    while (it.next()) |pattern| {
+        const trimmed = mem.trim(u8, pattern, " \t\r\n");
+        if (trimmed.len == 0) continue;
+        if (matches(trimmed, name)) return true;
+    }
+    return false;
+}
+
 pub fn matches(pattern: []const u8, name: []const u8) bool {
     var glob = pattern;
     const anchor_start = mem.startsWith(u8, glob, "^");
@@ -39,6 +49,16 @@ pub fn matches(pattern: []const u8, name: []const u8) bool {
         while (end <= name.len) : (end += 1) {
             if (globMatch(glob, name[start..end])) return true;
         }
+    }
+    return false;
+}
+
+pub fn mayMatchAnyChild(patterns: []const u8, name: []const u8) bool {
+    var it = mem.splitScalar(u8, patterns, ',');
+    while (it.next()) |pattern| {
+        const trimmed = mem.trim(u8, pattern, " \t\r\n");
+        if (trimmed.len == 0) continue;
+        if (mayMatchChild(trimmed, name)) return true;
     }
     return false;
 }
@@ -93,9 +113,20 @@ test "filter matches substrings anchors and globs" {
     try testing.expect(!matches("^Benchmark*/*Scalar$", "BenchmarkAsciiCount/Table"));
 }
 
+test "filter matches comma-separated alternatives" {
+    try testing.expect(matchesAny("Alloc,Table", "BenchmarkAllocPerLine"));
+    try testing.expect(matchesAny("Alloc, Table", "BenchmarkAsciiCount/Table"));
+    try testing.expect(matchesAny("^BenchmarkOther, Table$", "BenchmarkAsciiCount/Table"));
+    try testing.expect(!matchesAny("Alloc,Hash", "BenchmarkAsciiCount/Table"));
+    try testing.expect(!matchesAny(", ,", "BenchmarkAsciiCount/Table"));
+}
+
 test "filter can select child benchmarks from the parent name" {
     try testing.expect(mayMatchChild("^BenchmarkFilter/Glob$", "BenchmarkFilter"));
     try testing.expect(mayMatchChild("Filter/Glob", "BenchmarkFilter"));
     try testing.expect(!mayMatchChild("^BenchmarkOther/Glob$", "BenchmarkFilter"));
     try testing.expect(!mayMatchChild("Glob", "BenchmarkFilter"));
+
+    try testing.expect(mayMatchAnyChild("Other, Filter/Glob", "BenchmarkFilter"));
+    try testing.expect(!mayMatchAnyChild("Other, Glob", "BenchmarkFilter"));
 }

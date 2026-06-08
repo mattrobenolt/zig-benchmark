@@ -255,6 +255,7 @@ The generated runner supports:
 --benchtime 250ms, --benchtime=250ms, -t 250ms   run each benchmark for approximately this long
 --benchtime 1000x, --benchtime=1000x, -t1000x    run exactly 1000 iterations
 --filter pattern, --filter=pattern, -f pattern   run benchmarks whose full name matches pattern
+                                                 comma-separated patterns are OR'd
 --benchmem, -m                                    print B/op and allocs/op
 --parallelism N, --parallelism=N, -p N, -pN       default B.runParallel multiplier
 --no-env                                         suppress environment header lines
@@ -262,14 +263,16 @@ The generated runner supports:
 
 Duration units are `ns`, `us`, `µs`, `ms`, `s`, `m`, and `h`.
 
-Filters are glob-like, not regular expressions. Plain text remains substring matching. A leading `^` anchors the start, a trailing `$` anchors the end, and `*` matches any bytes:
+Filters are comma-separated glob-like patterns, not regular expressions. Plain text remains substring matching. A leading `^` anchors the start, a trailing `$` anchors the end, and `*` matches any bytes. Multiple patterns are OR'd:
 
 ```text
---filter=Alloc       contains Alloc
---filter='^Bench'    starts with Bench
---filter='Table$'    ends with Table
---filter='^Foo$'     exactly Foo
---filter='Foo*Bar'   Foo followed by Bar
+--filter=Alloc                  contains Alloc
+--filter='^Bench'               starts with Bench
+--filter='Table$'               ends with Table
+--filter='^Foo$'                exactly Foo
+--filter='Foo*Bar'              Foo followed by Bar
+--filter='Alloc,Table'          contains Alloc or Table
+--filter='^Encode,Decode/Fast$' starts with Encode or ends with Decode/Fast
 ```
 
 By default, the runner emits Zig environment metadata before benchmark rows:
