@@ -7,14 +7,31 @@ pub const BenchmarkOptions = struct {
 };
 
 pub fn addTest(b: *std.Build, options: BenchmarkOptions) *std.Build.Step.Compile {
+    return addTestModule(b, .{
+        .name = options.name,
+        .benchmark_module = options.dependency.module("benchmark"),
+        .root_module = options.root_module,
+    });
+}
+
+pub fn addRunTest(b: *std.Build, options: BenchmarkOptions) *std.Build.Step.Run {
+    return b.addRunArtifact(addTest(b, options));
+}
+
+const ModuleBenchmarkOptions = struct {
+    name: []const u8 = "benchmark",
+    benchmark_module: *std.Build.Module,
+    root_module: *std.Build.Module,
+};
+
+fn addTestModule(b: *std.Build, options: ModuleBenchmarkOptions) *std.Build.Step.Compile {
     const write_files = b.addWriteFiles();
     const main_source = write_files.add("benchmark-main.zig", @embedFile("src/benchmark_main.zig"));
 
     const target = options.root_module.resolved_target orelse b.graph.host;
     const optimize = options.root_module.optimize orelse .Debug;
 
-    const benchmark_module = options.dependency.module("benchmark");
-    options.root_module.addImport("benchmark", benchmark_module);
+    options.root_module.addImport("benchmark", options.benchmark_module);
 
     const exe = b.addExecutable(.{
         .name = options.name,
@@ -24,13 +41,9 @@ pub fn addTest(b: *std.Build, options: BenchmarkOptions) *std.Build.Step.Compile
             .optimize = optimize,
         }),
     });
-    exe.root_module.addImport("benchmark", benchmark_module);
+    exe.root_module.addImport("benchmark", options.benchmark_module);
     exe.root_module.addImport("benchmark_root", options.root_module);
     return exe;
-}
-
-pub fn addRunTest(b: *std.Build, options: BenchmarkOptions) *std.Build.Step.Run {
-    return b.addRunArtifact(addTest(b, options));
 }
 
 fn addExample(
@@ -98,7 +111,20 @@ pub fn build(b: *std.Build) void {
     const run_compare_step = b.step("run-compare", "Run the comparison benchmark example");
     run_compare_step.dependOn(&run_compare.step);
 
-    const run_filter_benchmark = addExample(b, module, filter_module, target, optimize, "filter-benchmark", "benchmarks/filter.zig");
+    const filter_benchmark_module = b.createModule(.{
+        .root_source_file = b.path("benchmarks/filter.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    filter_benchmark_module.addImport("benchmark_filter", filter_module);
+
+    const run_filter_benchmark = b.addRunArtifact(addTestModule(b, .{
+        .name = "filter-benchmark",
+        .benchmark_module = module,
+        .root_module = filter_benchmark_module,
+    }));
+    if (b.args) |args| run_filter_benchmark.addArgs(args);
+
     const run_benchmark_step = b.step("run-benchmark", "Run internal benchmarks");
     run_benchmark_step.dependOn(&run_filter_benchmark.step);
 

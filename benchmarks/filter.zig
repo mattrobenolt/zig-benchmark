@@ -1,5 +1,3 @@
-const std = @import("std");
-
 const bench = @import("benchmark");
 const filter = @import("benchmark_filter");
 
@@ -16,6 +14,15 @@ const cases = [_]struct {
     .{ .pattern = "^Benchmark*/*Table$", .expected = true },
     .{ .pattern = "^Benchmark*/*Scalar$", .expected = false },
 };
+
+pub fn benchmarkFilter(b: *bench.B) !void {
+    _ = try b.run("Substring", benchmarkFilterSubstring);
+    _ = try b.run("Prefix", benchmarkFilterPrefix);
+    _ = try b.run("Suffix", benchmarkFilterSuffix);
+    _ = try b.run("Exact", benchmarkFilterExact);
+    _ = try b.run("Glob", benchmarkFilterGlob);
+    _ = try b.run("Mixed", benchmarkFilterMixed);
+}
 
 fn benchmarkFilterSubstring(b: *bench.B) !void {
     var matched = false;
@@ -67,24 +74,4 @@ fn benchmarkFilterMixed(b: *bench.B) !void {
         matched_count = count;
     }
     b.keepAlive(matched_count);
-}
-
-pub fn main() !void {
-    const allocator = std.heap.smp_allocator;
-
-    var args = std.process.args();
-    const options: bench.Options = try .parse(&args, .{
-        .benchtime = .{ .duration_ns = 100 * std.time.ns_per_ms },
-    });
-
-    const benchmarks = [_]bench.Spec{
-        .{ .name = "BenchmarkFilter/Substring", .func = benchmarkFilterSubstring },
-        .{ .name = "BenchmarkFilter/Prefix", .func = benchmarkFilterPrefix },
-        .{ .name = "BenchmarkFilter/Suffix", .func = benchmarkFilterSuffix },
-        .{ .name = "BenchmarkFilter/Exact", .func = benchmarkFilterExact },
-        .{ .name = "BenchmarkFilter/Glob", .func = benchmarkFilterGlob },
-        .{ .name = "BenchmarkFilter/Mixed", .func = benchmarkFilterMixed },
-    };
-
-    _ = try bench.runBenchmarks(allocator, &benchmarks, options);
 }

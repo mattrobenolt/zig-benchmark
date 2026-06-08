@@ -119,7 +119,7 @@ pub fn benchmarkAdd(b: *bench.B) !void {
 
 Exported declarations whose names begin with `Benchmark` or `benchmark` are discovered automatically. Lowercase Zig-style names are printed in Go-style form, so `benchmarkAdd` reports as `BenchmarkAdd`.
 
-Use sub-benchmark names with slashes when you want benchstat-friendly comparisons:
+Use sub-benchmarks when you want slash-separated, benchstat-friendly comparisons:
 
 ```zig
 pub fn benchmarkParser(b: *bench.B) !void {
@@ -127,6 +127,8 @@ pub fn benchmarkParser(b: *bench.B) !void {
     _ = try b.run("SIMD", benchmarkParserSimd);
 }
 ```
+
+This emits rows named `BenchmarkParser/Baseline` and `BenchmarkParser/SIMD`.
 
 ## Loop style
 
@@ -283,7 +285,7 @@ Writers are flushed after every benchmark row.
 
 ## Custom runners
 
-Most projects should use `addRunTest`. If you need your own `main`, build a slice of `bench.Spec` and call the runner directly:
+Most projects should use `addRunTest`. If you need your own `main`, build a slice of `bench.Spec` and call the runner directly. Benchmark functions have the public type alias `bench.Function`, which is `*const fn (*bench.B) anyerror!void`.
 
 ```zig
 const std = @import("std");

@@ -72,11 +72,6 @@ pub const DurationOrCount = union(enum) {
     }
 };
 
-pub const Spec = struct {
-    name: []const u8,
-    func: *const fn (*B) anyerror!void,
-};
-
 pub fn runModuleBenchmarks(comptime root: type, allocator: Allocator, options: Options) !bool {
     const benchmarks = comptime moduleBenchmarks(root);
     return runBenchmarks(allocator, &benchmarks, options);
@@ -142,13 +137,13 @@ pub const Result = struct {
         self.* = undefined;
     }
 
-    pub fn nsPerOp(self: *Result) i64 {
+    pub fn nsPerOp(self: *const Result) i64 {
         if (self.extra.get("ns/op")) |v| return @intFromFloat(v);
         if (self.n == 0) return 0;
         return @intCast(self.t_ns / self.n);
     }
 
-    pub fn mbPerSec(self: *Result) f64 {
+    pub fn mbPerSec(self: *const Result) f64 {
         if (self.extra.get("MB/s")) |v| return v;
         if (self.bytes <= 0 or self.t_ns == 0 or self.n == 0) return 0;
         const bytes: f64 = @floatFromInt(self.bytes);
@@ -157,19 +152,19 @@ pub const Result = struct {
         return (bytes * n / 1e6) / seconds;
     }
 
-    pub fn allocsPerOp(self: *Result) i64 {
+    pub fn allocsPerOp(self: *const Result) i64 {
         if (self.extra.get("allocs/op")) |v| return @intFromFloat(v);
         if (self.n == 0) return 0;
         return @intCast(self.mem_allocs / self.n);
     }
 
-    pub fn allocedBytesPerOp(self: *Result) i64 {
+    pub fn allocedBytesPerOp(self: *const Result) i64 {
         if (self.extra.get("B/op")) |v| return @intFromFloat(v);
         if (self.n == 0) return 0;
         return @intCast(self.mem_bytes / self.n);
     }
 
-    pub fn format(self: *Result, writer: *Io.Writer) !void {
+    pub fn format(self: *const Result, writer: *Io.Writer) !void {
         try writer.print("{d:>8}", .{self.n});
 
         const ns = self.extra.get("ns/op") orelse blk: {
@@ -197,7 +192,7 @@ pub const Result = struct {
         }
     }
 
-    pub fn formatMem(self: *Result, writer: *Io.Writer) !void {
+    pub fn formatMem(self: *const Result, writer: *Io.Writer) !void {
         try writer.print("{d:>8} B/op\t{d:>8} allocs/op", .{
             @as(u64, @intCast(self.allocedBytesPerOp())),
             @as(u64, @intCast(self.allocsPerOp())),
@@ -296,6 +291,9 @@ pub const B = struct {
     net_allocs: u64 = 0,
     net_bytes: u64 = 0,
     show_alloc_result: bool = false,
+    writer: ?*Io.Writer = null,
+    benchmem: bool = false,
+    filter_pattern: ?[]const u8 = null,
     result: Result = .{},
     parallelism: usize = 1,
     previous_n: u64 = 0,
@@ -324,6 +322,9 @@ pub const B = struct {
             .bench_time = options.benchtime,
             .timer = try .start(),
             .parallelism = options.parallelism,
+            .writer = options.writer,
+            .benchmem = options.benchmem,
+            .filter_pattern = options.filter,
         };
     }
 
@@ -420,15 +421,23 @@ pub const B = struct {
             try std.fmt.allocPrint(self.internal_allocator, "{s}/{s}", .{ self.name, name });
         defer self.internal_allocator.free(full_name);
 
+        if (self.filter_pattern) |pattern| {
+            if (!filter.matches(pattern, self.name) and !filter.matches(pattern, full_name)) return true;
+        }
+
         var sub: B = try .init(self.internal_allocator, func, .{
             .benchtime = self.bench_time,
+            .benchmem = self.benchmem,
             .parallelism = self.parallelism,
+            .writer = self.writer,
+            .filter = self.filter_pattern,
         });
         defer sub.deinit();
         sub.name = full_name;
 
         try sub.run1AndMaybeLaunch();
-        self.add(sub.result);
+        if (self.writer) |writer| try printBenchmarkResult(writer, sub.name, &sub, self.benchmem);
+        if (!sub.failed and !sub.skipped) self.add(sub.result);
         if (sub.failed) self.failed = true;
         return !sub.failed;
     }
@@ -580,6 +589,13 @@ pub const B = struct {
     }
 };
 
+pub const Function = *const fn (*B) anyerror!void;
+
+pub const Spec = struct {
+    name: []const u8,
+    func: Function,
+};
+
 pub const PB = struct {
     global_n: *AtomicU64,
     grain: u64,
@@ -615,7 +631,7 @@ fn parallelWorker(ctx: *ParallelContext) void {
     ctx.body(&pb) catch ctx.failed.store(1, .seq_cst);
 }
 
-pub fn benchmark(allocator: Allocator, func: *const fn (*B) anyerror!void, options: Options) !Result {
+pub fn benchmark(allocator: Allocator, func: Function, options: Options) !Result {
     var b: B = try .init(allocator, func, options);
     defer b.deinit();
     try b.run1AndMaybeLaunch();
@@ -640,39 +656,51 @@ pub fn runBenchmarks(allocator: Allocator, benchmarks: []const Spec, options: Op
     var ok = true;
     for (benchmarks) |entry| {
         if (options.filter) |pattern| {
-            if (!filter.matches(pattern, entry.name)) continue;
+            if (!filter.matches(pattern, entry.name) and !filter.mayMatchChild(pattern, entry.name)) continue;
         }
 
         var i: usize = 0;
         while (i < options.count) : (i += 1) {
-            var b: B = try .init(allocator, entry.func, options);
+            var run_options = options;
+            run_options.writer = writer;
+
+            var b: B = try .init(allocator, entry.func, run_options);
             defer b.deinit();
             b.name = entry.name;
             try b.run1AndMaybeLaunch();
 
-            try writer.print("{s}\t", .{entry.name});
-            if (b.failed) {
-                ok = false;
-                try writer.writeAll("FAIL\n");
-                try writer.flush();
-                continue;
-            }
-            if (b.skipped) {
-                try writer.writeAll("SKIP\n");
-                try writer.flush();
+            if (b.has_sub) {
+                if (b.failed) ok = false;
                 continue;
             }
 
-            try b.result.format(writer);
-            if (options.benchmem or b.show_alloc_result) {
-                try writer.writeByte('\t');
-                try b.result.formatMem(writer);
-            }
-            try writer.writeByte('\n');
-            try writer.flush();
+            try printBenchmarkResult(writer, entry.name, &b, options.benchmem);
+            if (b.failed) ok = false;
         }
     }
     return ok;
+}
+
+fn printBenchmarkResult(writer: *Io.Writer, name: []const u8, b: *const B, benchmem: bool) !void {
+    try writer.print("{s}\t", .{name});
+    if (b.failed) {
+        try writer.writeAll("FAIL\n");
+        try writer.flush();
+        return;
+    }
+    if (b.skipped) {
+        try writer.writeAll("SKIP\n");
+        try writer.flush();
+        return;
+    }
+
+    try b.result.format(writer);
+    if (benchmem or b.show_alloc_result) {
+        try writer.writeByte('\t');
+        try b.result.formatMem(writer);
+    }
+    try writer.writeByte('\n');
+    try writer.flush();
 }
 
 fn emitEnvironment(writer: *Io.Writer) !void {

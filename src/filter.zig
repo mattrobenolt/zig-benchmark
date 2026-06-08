@@ -43,6 +43,11 @@ pub fn matches(pattern: []const u8, name: []const u8) bool {
     return false;
 }
 
+pub fn mayMatchChild(pattern: []const u8, name: []const u8) bool {
+    const slash = mem.indexOfScalar(u8, pattern, '/') orelse return false;
+    return matches(pattern[0..slash], name);
+}
+
 fn globMatch(pattern: []const u8, text: []const u8) bool {
     var pattern_index: usize = 0;
     var text_index: usize = 0;
@@ -86,4 +91,11 @@ test "filter matches substrings anchors and globs" {
     try testing.expect(matches("Ascii*Table", "BenchmarkAsciiCount/Table"));
     try testing.expect(matches("^Benchmark*/*Table$", "BenchmarkAsciiCount/Table"));
     try testing.expect(!matches("^Benchmark*/*Scalar$", "BenchmarkAsciiCount/Table"));
+}
+
+test "filter can select child benchmarks from the parent name" {
+    try testing.expect(mayMatchChild("^BenchmarkFilter/Glob$", "BenchmarkFilter"));
+    try testing.expect(mayMatchChild("Filter/Glob", "BenchmarkFilter"));
+    try testing.expect(!mayMatchChild("^BenchmarkOther/Glob$", "BenchmarkFilter"));
+    try testing.expect(!mayMatchChild("Glob", "BenchmarkFilter"));
 }
