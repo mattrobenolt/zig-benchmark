@@ -1,4 +1,4 @@
-# zig-benchmark
+# benchmark
 
 A Zig benchmark package modeled closely on Go 1.26's `testing.B` runner.
 
@@ -52,6 +52,69 @@ fn benchmarkAlloc(b: *bench.B) !void {
 }
 ```
 
+## Build integration
+
+Consumer projects can let `benchmark` provide the benchmark executable entrypoint. Their benchmark module only exports benchmark functions; the generated main handles CLI parsing, environment headers, and running everything.
+
+In the consumer's `build.zig.zon`:
+
+```zig
+.dependencies = .{
+    .benchmark = .{ .url = "...", .hash = "..." },
+},
+```
+
+In the consumer's `build.zig`:
+
+```zig
+const std = @import("std");
+const benchmark = @import("benchmark");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const benchmark_dep = b.dependency("benchmark", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const root_module = b.createModule(.{
+        .root_source_file = b.path("src/benchmarks.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    root_module.addImport("benchmark", benchmark_dep.module("benchmark"));
+
+    const run_benchmarks = benchmark.addRunTest(b, .{
+        .dependency = benchmark_dep,
+        .root_module = root_module,
+    });
+    if (b.args) |args| run_benchmarks.addArgs(args);
+
+    const bench_step = b.step("bench", "Run benchmarks");
+    bench_step.dependOn(&run_benchmarks.step);
+}
+```
+
+Then `src/benchmarks.zig` can be just benchmark declarations:
+
+```zig
+const bench = @import("benchmark");
+
+pub fn benchmarkAdd(b: *bench.B) !void {
+    var x: u64 = 0;
+    while (try b.loop()) x +%= 1;
+    b.keepAlive(x);
+}
+```
+
+Public declarations named `BenchmarkFoo` or `benchmarkFoo` are discovered automatically. Lowercase Zig-style names are emitted in Go-style form, so `benchmarkAdd` prints as `BenchmarkAdd`.
+
+See `examples/consumer` for a complete standalone project using the package as a dependency.
+
+## CLI
+
 For command-line handling, examples use `parseCliOptions`, which walks `std.process.ArgIterator` instead of allocating an argument array:
 
 ```zig
@@ -94,6 +157,7 @@ Run the checks and examples:
 zig build test
 zig build run-example -- --count=2 --filter=Alloc
 zig build run-compare -Doptimize=ReleaseFast -- --count=10 --benchtime=100ms
+zig build run-consumer
 ```
 
 The comparison example is shaped for `benchstat`:

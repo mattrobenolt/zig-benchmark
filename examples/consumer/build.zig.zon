@@ -1,0 +1,13 @@
+.{
+    .name = .benchmark_consumer,
+    .version = "0.1.0",
+    .fingerprint = 0x3ab8faae15f238c3,
+    .dependencies = .{
+        .benchmark = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

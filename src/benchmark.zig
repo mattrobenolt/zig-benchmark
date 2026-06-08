@@ -55,7 +55,7 @@ pub fn parseCliOptions(allocator: Allocator, defaults: Options) !CliOptions {
         } else if (mem.startsWith(u8, arg, "--count=")) {
             options.count = try std.fmt.parseInt(usize, arg["--count=".len..], 10);
         } else if (mem.startsWith(u8, arg, "--benchtime=")) {
-            options.benchtime = try DurationOrCount.parse(arg["--benchtime=".len..]);
+            options.benchtime = try .parse(arg["--benchtime=".len..]);
         } else if (mem.startsWith(u8, arg, "--filter=")) {
             options.filter = arg["--filter=".len..];
         } else if (mem.startsWith(u8, arg, "--parallelism=")) {
@@ -88,6 +88,47 @@ pub const InternalBenchmark = struct {
     name: []const u8,
     func: *const fn (*B) anyerror!void,
 };
+
+pub fn runModuleBenchmarks(comptime root: type, allocator: Allocator, options: Options) !bool {
+    const benchmarks = comptime moduleBenchmarks(root);
+    return runBenchmarks(allocator, &benchmarks, options);
+}
+
+fn moduleBenchmarks(comptime root: type) [countModuleBenchmarks(root)]InternalBenchmark {
+    const decls = @typeInfo(root).@"struct".decls;
+    var benchmarks: [countModuleBenchmarks(root)]InternalBenchmark = undefined;
+    var i: usize = 0;
+
+    inline for (decls) |decl| {
+        if (comptime isBenchmarkName(decl.name)) {
+            benchmarks[i] = .{
+                .name = normalizedBenchmarkName(decl.name),
+                .func = @field(root, decl.name),
+            };
+            i += 1;
+        }
+    }
+
+    return benchmarks;
+}
+
+fn countModuleBenchmarks(comptime root: type) comptime_int {
+    const decls = @typeInfo(root).@"struct".decls;
+    var count: comptime_int = 0;
+    for (decls) |decl| {
+        if (isBenchmarkName(decl.name)) count += 1;
+    }
+    return count;
+}
+
+fn isBenchmarkName(comptime name: []const u8) bool {
+    return mem.startsWith(u8, name, "Benchmark") or mem.startsWith(u8, name, "benchmark");
+}
+
+fn normalizedBenchmarkName(comptime name: []const u8) []const u8 {
+    if (mem.startsWith(u8, name, "Benchmark")) return name;
+    return std.fmt.comptimePrint("Benchmark{s}", .{name["benchmark".len..]});
+}
 
 pub inline fn keepAlive(value: anytype) void {
     doNotOptimizeAway(value);
