@@ -39,12 +39,20 @@ pub const Options = struct {
                 options.benchmem = true;
             } else if (mem.eql(u8, arg, "--no-env")) {
                 options.emit_environment = false;
+            } else if (mem.eql(u8, arg, "--count")) {
+                options.count = try std.fmt.parseInt(usize, try nextFlagValue(args), 10);
             } else if (mem.startsWith(u8, arg, "--count=")) {
                 options.count = try std.fmt.parseInt(usize, arg["--count=".len..], 10);
+            } else if (mem.eql(u8, arg, "--benchtime")) {
+                options.benchtime = try .parse(try nextFlagValue(args));
             } else if (mem.startsWith(u8, arg, "--benchtime=")) {
                 options.benchtime = try .parse(arg["--benchtime=".len..]);
+            } else if (mem.eql(u8, arg, "--filter")) {
+                options.filter = try nextFlagValue(args);
             } else if (mem.startsWith(u8, arg, "--filter=")) {
                 options.filter = arg["--filter=".len..];
+            } else if (mem.eql(u8, arg, "--parallelism")) {
+                options.parallelism = try std.fmt.parseInt(usize, try nextFlagValue(args), 10);
             } else if (mem.startsWith(u8, arg, "--parallelism=")) {
                 options.parallelism = try std.fmt.parseInt(usize, arg["--parallelism=".len..], 10);
             } else return error.UnknownBenchmarkOption;
@@ -56,6 +64,10 @@ pub const Options = struct {
         return options;
     }
 };
+
+fn nextFlagValue(args: *std.process.ArgIterator) ![]const u8 {
+    return args.next() orelse error.MissingBenchmarkOptionValue;
+}
 
 pub const DurationOrCount = union(enum) {
     duration_ns: u64,

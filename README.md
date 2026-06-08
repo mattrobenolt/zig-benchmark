@@ -250,13 +250,13 @@ Parallel benchmarks report wall-clock `ns/op` for the benchmark as a whole, not 
 The generated runner supports:
 
 ```text
---count=N              run each benchmark N times
---benchtime=250ms      run each benchmark for approximately this long
---benchtime=1000x      run exactly 1000 iterations
---filter=pattern       run benchmarks whose full name matches pattern
---benchmem             print B/op and allocs/op
---parallelism=N        default B.runParallel multiplier
---no-env               suppress environment header lines
+--count N, --count=N                  run each benchmark N times
+--benchtime 250ms, --benchtime=250ms  run each benchmark for approximately this long
+--benchtime 1000x, --benchtime=1000x  run exactly 1000 iterations
+--filter pattern, --filter=pattern    run benchmarks whose full name matches pattern
+--benchmem                            print B/op and allocs/op
+--parallelism N, --parallelism=N      default B.runParallel multiplier
+--no-env                              suppress environment header lines
 ```
 
 Duration units are `ns`, `us`, `µs`, `ms`, `s`, `m`, and `h`.
