@@ -10,6 +10,7 @@ const Thread = std.Thread;
 const testing = std.testing;
 const doNotOptimizeAway = mem.doNotOptimizeAway;
 const builtin = @import("builtin");
+
 const filter = @import("benchmark_filter");
 
 const AtomicU64 = std.atomic.Value(u64);
@@ -28,6 +29,7 @@ pub const Options = struct {
     parallelism: usize = 1,
     filter: ?[]const u8 = null,
     emit_environment: bool = true,
+    help: bool = false,
     writer: ?*Io.Writer = null,
 
     pub fn parse(args: *std.process.ArgIterator, defaults: Options) !Options {
@@ -35,7 +37,9 @@ pub const Options = struct {
 
         var options = defaults;
         while (args.next()) |arg| {
-            if (mem.eql(u8, arg, "--benchmem")) {
+            if (mem.eql(u8, arg, "--help") or mem.eql(u8, arg, "-h")) {
+                options.help = true;
+            } else if (mem.eql(u8, arg, "--benchmem") or mem.eql(u8, arg, "-m")) {
                 options.benchmem = true;
             } else if (mem.eql(u8, arg, "--no-env")) {
                 options.emit_environment = false;
@@ -43,21 +47,30 @@ pub const Options = struct {
                 options.count = try std.fmt.parseInt(usize, try nextFlagValue(args), 10);
             } else if (mem.startsWith(u8, arg, "--count=")) {
                 options.count = try std.fmt.parseInt(usize, arg["--count=".len..], 10);
+            } else if (try shortFlagValue(arg, "-c", args)) |value| {
+                options.count = try std.fmt.parseInt(usize, value, 10);
             } else if (mem.eql(u8, arg, "--benchtime")) {
                 options.benchtime = try .parse(try nextFlagValue(args));
             } else if (mem.startsWith(u8, arg, "--benchtime=")) {
                 options.benchtime = try .parse(arg["--benchtime=".len..]);
+            } else if (try shortFlagValue(arg, "-t", args)) |value| {
+                options.benchtime = try .parse(value);
             } else if (mem.eql(u8, arg, "--filter")) {
                 options.filter = try nextFlagValue(args);
             } else if (mem.startsWith(u8, arg, "--filter=")) {
                 options.filter = arg["--filter=".len..];
+            } else if (try shortFlagValue(arg, "-f", args)) |value| {
+                options.filter = value;
             } else if (mem.eql(u8, arg, "--parallelism")) {
                 options.parallelism = try std.fmt.parseInt(usize, try nextFlagValue(args), 10);
             } else if (mem.startsWith(u8, arg, "--parallelism=")) {
                 options.parallelism = try std.fmt.parseInt(usize, arg["--parallelism=".len..], 10);
+            } else if (try shortFlagValue(arg, "-p", args)) |value| {
+                options.parallelism = try std.fmt.parseInt(usize, value, 10);
             } else return error.UnknownBenchmarkOption;
         }
 
+        if (options.help) return options;
         if (options.count == 0) return error.InvalidCount;
         if (options.parallelism == 0) options.parallelism = 1;
 
@@ -67,6 +80,14 @@ pub const Options = struct {
 
 fn nextFlagValue(args: *std.process.ArgIterator) ![]const u8 {
     return args.next() orelse error.MissingBenchmarkOptionValue;
+}
+
+fn shortFlagValue(arg: []const u8, flag: []const u8, args: *std.process.ArgIterator) !?[]const u8 {
+    if (!mem.startsWith(u8, arg, flag)) return null;
+    const value = arg[flag.len..];
+    if (value.len == 0) return @as(?[]const u8, try nextFlagValue(args));
+    if (mem.startsWith(u8, value, "=")) return value[1..];
+    return value;
 }
 
 pub const DurationOrCount = union(enum) {
@@ -663,6 +684,11 @@ pub fn runBenchmarks(allocator: Allocator, benchmarks: []const Spec, options: Op
     const writer = options.writer orelse &stdout.interface;
     defer writer.flush() catch {};
 
+    if (options.help) {
+        try printUsage(writer);
+        return true;
+    }
+
     if (options.emit_environment) try emitEnvironment(writer);
 
     var ok = true;
@@ -691,6 +717,26 @@ pub fn runBenchmarks(allocator: Allocator, benchmarks: []const Spec, options: Op
         }
     }
     return ok;
+}
+
+pub fn printUsage(writer: *Io.Writer) !void {
+    try writer.writeAll(
+        \\Usage: benchmark [options]
+        \\
+        \\Options:
+        \\  -h, --help                         show this help
+        \\  -c N, -cN, --count N, --count=N    run each benchmark N times
+        \\  -t D, -tD, --benchtime D           run each benchmark for duration D
+        \\  -t Nx, -tNx, --benchtime Nx        run exactly N iterations
+        \\  -f P, -fP, --filter P              run benchmarks matching pattern P
+        \\  -m, --benchmem                     print B/op and allocs/op
+        \\  -p N, -pN, --parallelism N         default B.runParallel multiplier
+        \\  --no-env                           suppress environment header lines
+        \\
+        \\Durations use ns, us, µs, ms, s, m, or h. Filters are glob-like:
+        \\plain text contains, ^ anchors start, $ anchors end, * matches any bytes.
+        \\
+    );
 }
 
 fn printBenchmarkResult(writer: *Io.Writer, name: []const u8, b: *const B, benchmem: bool) !void {
