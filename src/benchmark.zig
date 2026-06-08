@@ -28,46 +28,33 @@ pub const Options = struct {
     filter: ?[]const u8 = null,
     emit_environment: bool = true,
     writer: ?*Io.Writer = null,
-};
 
-pub const CliOptions = struct {
-    args: std.process.ArgIterator,
-    options: Options,
+    pub fn parse(args: *std.process.ArgIterator, defaults: Options) !Options {
+        _ = args.skip();
 
-    pub fn deinit(self: *CliOptions) void {
-        self.args.deinit();
-        self.* = undefined;
+        var options = defaults;
+        while (args.next()) |arg| {
+            if (mem.eql(u8, arg, "--benchmem")) {
+                options.benchmem = true;
+            } else if (mem.eql(u8, arg, "--no-env")) {
+                options.emit_environment = false;
+            } else if (mem.startsWith(u8, arg, "--count=")) {
+                options.count = try std.fmt.parseInt(usize, arg["--count=".len..], 10);
+            } else if (mem.startsWith(u8, arg, "--benchtime=")) {
+                options.benchtime = try .parse(arg["--benchtime=".len..]);
+            } else if (mem.startsWith(u8, arg, "--filter=")) {
+                options.filter = arg["--filter=".len..];
+            } else if (mem.startsWith(u8, arg, "--parallelism=")) {
+                options.parallelism = try std.fmt.parseInt(usize, arg["--parallelism=".len..], 10);
+            } else return error.UnknownBenchmarkOption;
+        }
+
+        if (options.count == 0) return error.InvalidCount;
+        if (options.parallelism == 0) options.parallelism = 1;
+
+        return options;
     }
 };
-
-pub fn parseCliOptions(allocator: Allocator, defaults: Options) !CliOptions {
-    var args = try std.process.argsWithAllocator(allocator);
-    errdefer args.deinit();
-
-    _ = args.skip();
-
-    var options = defaults;
-    while (args.next()) |arg| {
-        if (mem.eql(u8, arg, "--benchmem")) {
-            options.benchmem = true;
-        } else if (mem.eql(u8, arg, "--no-env")) {
-            options.emit_environment = false;
-        } else if (mem.startsWith(u8, arg, "--count=")) {
-            options.count = try std.fmt.parseInt(usize, arg["--count=".len..], 10);
-        } else if (mem.startsWith(u8, arg, "--benchtime=")) {
-            options.benchtime = try .parse(arg["--benchtime=".len..]);
-        } else if (mem.startsWith(u8, arg, "--filter=")) {
-            options.filter = arg["--filter=".len..];
-        } else if (mem.startsWith(u8, arg, "--parallelism=")) {
-            options.parallelism = try std.fmt.parseInt(usize, arg["--parallelism=".len..], 10);
-        } else return error.UnknownBenchmarkOption;
-    }
-
-    if (options.count == 0) return error.InvalidCount;
-    if (options.parallelism == 0) options.parallelism = 1;
-
-    return .{ .args = args, .options = options };
-}
 
 pub const DurationOrCount = union(enum) {
     duration_ns: u64,
@@ -84,7 +71,7 @@ pub const DurationOrCount = union(enum) {
     }
 };
 
-pub const InternalBenchmark = struct {
+pub const Spec = struct {
     name: []const u8,
     func: *const fn (*B) anyerror!void,
 };
@@ -94,9 +81,9 @@ pub fn runModuleBenchmarks(comptime root: type, allocator: Allocator, options: O
     return runBenchmarks(allocator, &benchmarks, options);
 }
 
-fn moduleBenchmarks(comptime root: type) [countModuleBenchmarks(root)]InternalBenchmark {
+fn moduleBenchmarks(comptime root: type) [countModuleBenchmarks(root)]Spec {
     const decls = @typeInfo(root).@"struct".decls;
-    var benchmarks: [countModuleBenchmarks(root)]InternalBenchmark = undefined;
+    var benchmarks: [countModuleBenchmarks(root)]Spec = undefined;
     var i: usize = 0;
 
     inline for (decls) |decl| {
@@ -140,7 +127,7 @@ pub inline fn blackBox(value: anytype) @TypeOf(value) {
     return runtime_value;
 }
 
-pub const BenchmarkResult = struct {
+pub const Result = struct {
     n: u64 = 0,
     t_ns: u64 = 0,
     bytes: i64 = 0,
@@ -148,19 +135,19 @@ pub const BenchmarkResult = struct {
     mem_bytes: u64 = 0,
     extra: MetricMap = .empty,
 
-    pub fn deinit(self: *BenchmarkResult, allocator: Allocator) void {
+    pub fn deinit(self: *Result, allocator: Allocator) void {
         freeMetricKeys(allocator, &self.extra);
         self.extra.deinit(allocator);
         self.* = undefined;
     }
 
-    pub fn nsPerOp(self: *BenchmarkResult) i64 {
+    pub fn nsPerOp(self: *Result) i64 {
         if (self.extra.get("ns/op")) |v| return @intFromFloat(v);
         if (self.n == 0) return 0;
         return @intCast(self.t_ns / self.n);
     }
 
-    pub fn mbPerSec(self: *BenchmarkResult) f64 {
+    pub fn mbPerSec(self: *Result) f64 {
         if (self.extra.get("MB/s")) |v| return v;
         if (self.bytes <= 0 or self.t_ns == 0 or self.n == 0) return 0;
         const bytes: f64 = @floatFromInt(self.bytes);
@@ -169,19 +156,19 @@ pub const BenchmarkResult = struct {
         return (bytes * n / 1e6) / seconds;
     }
 
-    pub fn allocsPerOp(self: *BenchmarkResult) i64 {
+    pub fn allocsPerOp(self: *Result) i64 {
         if (self.extra.get("allocs/op")) |v| return @intFromFloat(v);
         if (self.n == 0) return 0;
         return @intCast(self.mem_allocs / self.n);
     }
 
-    pub fn allocedBytesPerOp(self: *BenchmarkResult) i64 {
+    pub fn allocedBytesPerOp(self: *Result) i64 {
         if (self.extra.get("B/op")) |v| return @intFromFloat(v);
         if (self.n == 0) return 0;
         return @intCast(self.mem_bytes / self.n);
     }
 
-    pub fn format(self: *BenchmarkResult, writer: *Io.Writer) !void {
+    pub fn format(self: *Result, writer: *Io.Writer) !void {
         try writer.print("{d:>8}", .{self.n});
 
         const ns = self.extra.get("ns/op") orelse blk: {
@@ -209,7 +196,7 @@ pub const BenchmarkResult = struct {
         }
     }
 
-    pub fn formatMem(self: *BenchmarkResult, writer: *Io.Writer) !void {
+    pub fn formatMem(self: *Result, writer: *Io.Writer) !void {
         try writer.print("{d:>8} B/op\t{d:>8} allocs/op", .{
             @as(u64, @intCast(self.allocedBytesPerOp())),
             @as(u64, @intCast(self.allocsPerOp())),
@@ -308,7 +295,7 @@ pub const B = struct {
     net_allocs: u64 = 0,
     net_bytes: u64 = 0,
     show_alloc_result: bool = false,
-    result: BenchmarkResult = .{},
+    result: Result = .{},
     parallelism: usize = 1,
     previous_n: u64 = 0,
     previous_duration_ns: u64 = 0,
@@ -579,7 +566,7 @@ pub const B = struct {
         return true;
     }
 
-    fn add(self: *B, other: BenchmarkResult) void {
+    fn add(self: *B, other: Result) void {
         self.result.n = 1;
         self.result.t_ns += @intCast(other.nsPerOp());
         if (other.bytes == 0) {
@@ -627,7 +614,7 @@ fn parallelWorker(ctx: *ParallelContext) void {
     ctx.body(&pb) catch ctx.failed.store(1, .seq_cst);
 }
 
-pub fn benchmark(allocator: Allocator, func: *const fn (*B) anyerror!void, options: Options) !BenchmarkResult {
+pub fn benchmark(allocator: Allocator, func: *const fn (*B) anyerror!void, options: Options) !Result {
     var b: B = try .init(allocator, func, options);
     defer b.deinit();
     try b.run1AndMaybeLaunch();
@@ -641,7 +628,7 @@ pub fn benchmark(allocator: Allocator, func: *const fn (*B) anyerror!void, optio
     };
 }
 
-pub fn runBenchmarks(allocator: Allocator, benchmarks: []const InternalBenchmark, options: Options) !bool {
+pub fn runBenchmarks(allocator: Allocator, benchmarks: []const Spec, options: Options) !bool {
     var stdout_buf: [4096]u8 = undefined;
     var stdout = std.fs.File.stdout().writer(&stdout_buf);
     const writer = options.writer orelse &stdout.interface;
@@ -719,6 +706,7 @@ fn prettyPrint(writer: *Io.Writer, x: f64, unit: []const u8) !void {
     return writer.print("{d:>18.7} {s}", .{ x, unit });
 }
 
+// Metric keys are owned slices; StringArrayHashMapUnmanaged.clone would only copy the slices.
 fn cloneMetrics(allocator: Allocator, src: MetricMap) !MetricMap {
     var dst: MetricMap = .empty;
     errdefer {
@@ -762,8 +750,8 @@ fn parseDurationNs(s: []const u8) !u64 {
 }
 
 test "predictN matches Go growth constraints" {
-    try std.testing.expectEqual(@as(u64, 100), predictN(1000, 1, 10, 1));
-    try std.testing.expectEqual(@as(u64, 2), predictN(1, 1, 1000, 1));
+    try testing.expectEqual(@as(u64, 100), predictN(1000, 1, 10, 1));
+    try testing.expectEqual(@as(u64, 2), predictN(1, 1, 1000, 1));
 }
 
 test "Loop benchmark runs and records iterations" {
@@ -775,10 +763,10 @@ test "Loop benchmark runs and records iterations" {
         }
     }.run;
 
-    var result = try benchmark(std.testing.allocator, bench_fn, .{ .benchtime = .{ .count = 5 } });
-    defer result.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(u64, 5), result.n);
-    try std.testing.expectEqual(@as(f64, 5), result.extra.get("iters").?);
+    var result = try benchmark(testing.allocator, bench_fn, .{ .benchtime = .{ .count = 5 } });
+    defer result.deinit(testing.allocator);
+    try testing.expectEqual(@as(u64, 5), result.n);
+    try testing.expectEqual(@as(f64, 5), result.extra.get("iters").?);
 }
 
 test "B.N style benchmark runs requested count" {
@@ -789,9 +777,9 @@ test "B.N style benchmark runs requested count" {
         }
     }.run;
 
-    var result = try benchmark(std.testing.allocator, bench_fn, .{ .benchtime = .{ .count = 7 } });
-    defer result.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(u64, 7), result.n);
+    var result = try benchmark(testing.allocator, bench_fn, .{ .benchtime = .{ .count = 7 } });
+    defer result.deinit(testing.allocator);
+    try testing.expectEqual(@as(u64, 7), result.n);
 }
 
 test "b.allocator records timed allocations" {
@@ -804,10 +792,10 @@ test "b.allocator records timed allocations" {
         }
     }.run;
 
-    var result = try benchmark(std.testing.allocator, bench_fn, .{ .benchtime = .{ .count = 3 } });
-    defer result.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(u64, 3), result.mem_allocs);
-    try std.testing.expectEqual(@as(u64, 48), result.mem_bytes);
-    try std.testing.expectEqual(@as(i64, 1), result.allocsPerOp());
-    try std.testing.expectEqual(@as(i64, 16), result.allocedBytesPerOp());
+    var result = try benchmark(testing.allocator, bench_fn, .{ .benchtime = .{ .count = 3 } });
+    defer result.deinit(testing.allocator);
+    try testing.expectEqual(@as(u64, 3), result.mem_allocs);
+    try testing.expectEqual(@as(u64, 48), result.mem_bytes);
+    try testing.expectEqual(@as(i64, 1), result.allocsPerOp());
+    try testing.expectEqual(@as(i64, 16), result.allocedBytesPerOp());
 }

@@ -1,16 +1,11 @@
 const std = @import("std");
-const benchmark = @import("benchmark");
-const benchmark_root = @import("benchmark_root");
 
-pub fn main() !void {
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = debug_allocator.deinit();
-    const allocator = debug_allocator.allocator();
+const b = @import("benchmark");
+const root = @import("benchmark_root");
 
-    var cli = try benchmark.parseCliOptions(allocator, .{});
-    defer cli.deinit();
-
-    if (!try benchmark.runModuleBenchmarks(benchmark_root, allocator, cli.options)) {
-        std.process.exit(1);
-    }
+pub fn main() !u8 {
+    const allocator = std.heap.smp_allocator;
+    var args = std.process.args();
+    const opt: b.Options = try .parse(&args, .{});
+    return @intFromBool(!try b.runModuleBenchmarks(root, allocator, opt));
 }

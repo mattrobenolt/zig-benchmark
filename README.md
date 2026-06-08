@@ -1,70 +1,18 @@
 # benchmark
 
-A Zig benchmark package modeled closely on Go 1.26's `testing.B` runner.
+A Zig benchmark runner modeled after Go's `testing.B`.
 
-The core shape is intentionally Go-ish, with Zig names and error returns where Go uses goroutine exits:
+The usual API is a generated benchmark executable wired from `build.zig`. Your project provides a module full of exported benchmark functions; `benchmark` provides the `main`, CLI parsing, environment headers, result formatting, and runner logic.
 
-```zig
-fn benchmarkThing(b: *bench.B) !void {
-    var value: u64 = 0;
-    while (try b.loop()) {
-        value +%= doThing();
-    }
-    b.keepAlive(value);
-}
+## Add it to a project
+
+Add the package as a dependency named `benchmark`:
+
+```sh
+zig fetch --save git+https://github.com/mattrobenolt/zig-benchmark
 ```
 
-`B.N`-style benchmarks are supported as `b.n`:
-
-```zig
-fn benchmarkThingN(b: *bench.B) !void {
-    var i: u64 = 0;
-    while (i < b.n) : (i += 1) {
-        _ = doThing();
-    }
-}
-```
-
-Implemented so far: `B.loop`, `startTimer`, `stopTimer`, `resetTimer`, `elapsed`, `setBytes`, `reportMetric`, `reportAllocs`, sub-benchmarks via `run`, `runParallel`/`PB.next`, `setParallelism`, `benchmark`, `runBenchmarks`, CLI parsing, substring filtering, environment headers, Go-style iteration prediction, Go benchmark-result formatting, and allocation metrics for allocations made through `b.allocator`.
-
-Use `b.keepAlive(value)` or `bench.keepAlive(value)` to keep measured work observable. Zig cannot do Go's `B.Loop` compiler rewrite from a library, so this stays explicit:
-
-```zig
-fn benchmarkThing(b: *bench.B) !void {
-    var sink: u64 = 0;
-    while (try b.loop()) {
-        sink +%= doThing();
-    }
-    b.keepAlive(sink);
-}
-```
-
-Use `b.blackBox(value)` or `bench.blackBox(value)` when you want to hide an input value from constant propagation.
-
-Use `b.allocator` in the code under benchmark when you want `B/op` and `allocs/op`:
-
-```zig
-fn benchmarkAlloc(b: *bench.B) !void {
-    while (try b.loop()) {
-        const memory = try b.allocator.alloc(u8, 256);
-        defer b.allocator.free(memory);
-    }
-}
-```
-
-## Build integration
-
-Consumer projects can let `benchmark` provide the benchmark executable entrypoint. Their benchmark module only exports benchmark functions; the generated main handles CLI parsing, environment headers, and running everything.
-
-In the consumer's `build.zig.zon`:
-
-```zig
-.dependencies = .{
-    .benchmark = .{ .url = "...", .hash = "..." },
-},
-```
-
-In the consumer's `build.zig`:
+In `build.zig`, import the dependency's build helpers and create a benchmark step:
 
 ```zig
 const std = @import("std");
@@ -79,16 +27,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const root_module = b.createModule(.{
+    const benchmark_root = b.createModule(.{
         .root_source_file = b.path("src/benchmarks.zig"),
         .target = target,
         .optimize = optimize,
     });
-    root_module.addImport("benchmark", benchmark_dep.module("benchmark"));
 
     const run_benchmarks = benchmark.addRunTest(b, .{
         .dependency = benchmark_dep,
-        .root_module = root_module,
+        .root_module = benchmark_root,
     });
     if (b.args) |args| run_benchmarks.addArgs(args);
 
@@ -97,49 +44,176 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
-Then `src/benchmarks.zig` can be just benchmark declarations:
+Then run:
+
+```sh
+zig build bench
+zig build bench -- --count=10 --benchtime=250ms --benchmem
+```
+
+`addRunTest` is the normal integration point. It injects `@import("benchmark")` into the benchmark root module, generates the executable entrypoint, uses `std.heap.smp_allocator`, parses CLI flags, and calls `runModuleBenchmarks`.
+
+If you need the executable without a run step, use `addTest`; it returns the `*std.Build.Step.Compile`.
+
+## Write benchmarks
+
+A benchmark module exports functions that accept `*bench.B` and return `anyerror!void`:
 
 ```zig
 const bench = @import("benchmark");
 
 pub fn benchmarkAdd(b: *bench.B) !void {
     var x: u64 = 0;
-    while (try b.loop()) x +%= 1;
+    while (try b.loop()) {
+        x +%= 1;
+    }
     b.keepAlive(x);
 }
 ```
 
-Public declarations named `BenchmarkFoo` or `benchmarkFoo` are discovered automatically. Lowercase Zig-style names are emitted in Go-style form, so `benchmarkAdd` prints as `BenchmarkAdd`.
+Exported declarations whose names begin with `Benchmark` or `benchmark` are discovered automatically. Lowercase Zig-style names are printed in Go-style form, so `benchmarkAdd` reports as `BenchmarkAdd`.
 
-See `examples/consumer` for a complete standalone project using the package as a dependency.
-
-## CLI
-
-For command-line handling, examples use `parseCliOptions`, which walks `std.process.ArgIterator` instead of allocating an argument array:
+Use sub-benchmark names with slashes when you want benchstat-friendly comparisons:
 
 ```zig
-var cli = try bench.parseCliOptions(allocator, .{
-    .benchtime = .{ .duration_ns = 250 * std.time.ns_per_ms },
-    .benchmem = true,
-});
-defer cli.deinit();
-
-_ = try bench.runBenchmarks(allocator, &benchmarks, cli.options);
+pub fn benchmarkParser(b: *bench.B) !void {
+    _ = try b.run("Baseline", benchmarkParserBaseline);
+    _ = try b.run("SIMD", benchmarkParserSimd);
+}
 ```
 
-Supported flags:
+## Loop style
+
+The preferred shape is `b.loop()`, similar to Go 1.26's `B.Loop`:
+
+```zig
+pub fn benchmarkHash(b: *bench.B) !void {
+    const input = b.blackBox("hello" ** 64);
+    var out: u64 = 0;
+
+    while (try b.loop()) {
+        out = hash(input);
+    }
+
+    b.keepAlive(out);
+}
+```
+
+The first call to `b.loop()` resets the timer, so setup before the loop is not measured. When `b.loop()` returns `false`, the timer is stopped, so cleanup after the loop is not measured.
+
+Zig cannot do Go's compiler rewrite that automatically keeps every value inside the loop alive. Use `b.keepAlive(value)` for outputs and `b.blackBox(value)` for inputs that should not be constant-propagated away.
+
+## `b.n` style
+
+Old Go-style `B.N` benchmarks are supported as `b.n`:
+
+```zig
+pub fn benchmarkHashN(b: *bench.B) !void {
+    const input = b.blackBox("hello" ** 64);
+    var out: u64 = 0;
+
+    b.resetTimer();
+    var i: u64 = 0;
+    while (i < b.n) : (i += 1) {
+        out = hash(input);
+    }
+
+    b.keepAlive(out);
+}
+```
+
+With `b.n` style the benchmark function may be called multiple times while the runner searches for a stable iteration count. Call `b.resetTimer()` yourself if setup should be excluded.
+
+## Timers
+
+`B` provides the same basic timer controls as Go:
+
+```zig
+b.stopTimer();
+// expensive setup that should not count
+b.startTimer();
+
+// measured work
+
+b.resetTimer(); // zero elapsed time and allocation counters
+```
+
+`b.elapsed()` returns measured nanoseconds according to the benchmark timer, including the current running interval if the timer is on.
+
+## Throughput and custom metrics
+
+Use `setBytes` to report throughput:
+
+```zig
+b.setBytes(input.len);
+```
+
+That adds an `MB/s` column in addition to `ns/op`.
+
+Use `reportMetric` for extra values. If the metric is per operation, divide by `b.n` yourself and use a unit ending in `/op`:
+
+```zig
+try b.reportMetric(@as(f64, @floatFromInt(items)) / @as(f64, @floatFromInt(b.n)), "items/op");
+```
+
+`reportMetric` rejects empty units and units containing whitespace. Like Go, custom metrics named `ns/op`, `MB/s`, `B/op`, or `allocs/op` override the built-in metric with that unit.
+
+## Allocation metrics
+
+Use `b.allocator` for allocations you want counted:
+
+```zig
+pub fn benchmarkAlloc(b: *bench.B) !void {
+    while (try b.loop()) {
+        const memory = try b.allocator.alloc(u8, 256);
+        defer b.allocator.free(memory);
+        b.keepAlive(memory.ptr);
+    }
+}
+```
+
+Only allocations made through `b.allocator` are counted. Zig does not have Go's process-wide runtime allocation counters, so `B/op` and `allocs/op` are intentionally scoped to this allocator.
+
+Runner/internal allocations use a separate allocator and are not included in benchmark allocation results. The generated main uses `std.heap.smp_allocator` as the backing allocator.
+
+Allocation metrics are printed when either `--benchmem` is passed or a benchmark calls `b.reportAllocs()`.
+
+## Parallel benchmarks
+
+`runParallel` splits `b.n` iterations across worker threads. The worker receives a `*bench.PB`; loop until `pb.next()` returns false:
+
+```zig
+fn parallelBody(pb: *bench.PB) !void {
+    while (pb.next()) {
+        doWork();
+    }
+}
+
+pub fn benchmarkParallel(b: *bench.B) !void {
+    b.setParallelism(2); // workers = parallelism * cpu_count
+    try b.runParallel(parallelBody);
+}
+```
+
+Parallel benchmarks report wall-clock `ns/op` for the benchmark as a whole, not summed CPU time across workers.
+
+## CLI flags
+
+The generated runner supports:
 
 ```text
---count=N
---benchtime=250ms
---benchtime=1000x
---filter=substring
---benchmem
---parallelism=N
---no-env
+--count=N              run each benchmark N times
+--benchtime=250ms      run each benchmark for approximately this long
+--benchtime=1000x      run exactly 1000 iterations
+--filter=substring     run benchmarks whose full name contains substring
+--benchmem             print B/op and allocs/op
+--parallelism=N        default B.runParallel multiplier
+--no-env               suppress environment header lines
 ```
 
-The runner emits Zig environment metadata before benchmark rows by default:
+Duration units are `ns`, `us`, `µs`, `ms`, `s`, `m`, and `h`.
+
+By default, the runner emits Zig environment metadata before benchmark rows:
 
 ```text
 zig_os: macos
@@ -149,9 +223,49 @@ zig_cpu: apple_m1
 zig_mode: ReleaseFast
 ```
 
-Writers are flushed after every benchmark row so long benchmark suites stream useful output instead of hoarding it like a dragon.
+Writers are flushed after every benchmark row.
 
-Run the checks and examples:
+## Custom runners
+
+Most projects should use `addRunTest`. If you need your own `main`, build a slice of `bench.Spec` and call the runner directly:
+
+```zig
+const std = @import("std");
+const bench = @import("benchmark");
+
+fn benchmarkThing(b: *bench.B) !void {
+    while (try b.loop()) {
+        doThing();
+    }
+}
+
+pub fn main() !u8 {
+    const allocator = std.heap.smp_allocator;
+    var args = std.process.args();
+    const options: bench.Options = try .parse(&args, .{});
+
+    const specs = [_]bench.Spec{
+        .{ .name = "BenchmarkThing", .func = benchmarkThing },
+    };
+
+    return @intFromBool(!try bench.runBenchmarks(allocator, &specs, options));
+}
+```
+
+For one-off programmatic measurement, use `benchmark`:
+
+```zig
+var result = try bench.benchmark(allocator, benchmarkThing, .{ .benchtime = .{ .count = 1000 } });
+defer result.deinit(allocator);
+
+const ns_per_op = result.nsPerOp();
+```
+
+`Result` owns duplicated metric keys, so call `deinit` when you keep a returned result.
+
+## Examples
+
+This repository includes:
 
 ```sh
 zig build test
@@ -160,14 +274,16 @@ zig build run-compare -Doptimize=ReleaseFast -- --count=10 --benchtime=100ms
 zig build run-consumer
 ```
 
+`examples/consumer` is a standalone project that consumes this package through `build.zig.zon` and uses `addRunTest`.
+
+`examples/compare.zig` compares two ASCII lowercase counting implementations as `BenchmarkAsciiCount/Scalar` and `BenchmarkAsciiCount/Table`, plus an allocation-heavy benchmark to exercise `B/op` and `allocs/op`.
+
 The comparison example is shaped for `benchstat`:
 
 ```sh
 zig build run-compare -Doptimize=ReleaseFast -- --count=10 --benchtime=100ms > compare.txt
 benchstat -row .name -col .fullname compare.txt
 ```
-
-`examples/compare.zig` compares two ASCII lowercase counting implementations as `BenchmarkAsciiCount/Scalar` and `BenchmarkAsciiCount/Table`, plus an allocation-heavy benchmark to exercise `B/op` and `allocs/op`.
 
 ## License
 

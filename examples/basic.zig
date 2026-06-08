@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const bench = @import("benchmark");
 
 fn benchmarkSum(b: *bench.B) !void {
@@ -31,21 +32,19 @@ fn benchmarkAlloc(b: *bench.B) !void {
 }
 
 pub fn main() !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var args = std.process.args();
+    const allocator = std.heap.smp_allocator;
 
-    const benchmarks = [_]bench.InternalBenchmark{
+    const benchmarks = [_]bench.Spec{
         .{ .name = "BenchmarkSum", .func = benchmarkSum },
         .{ .name = "BenchmarkSumN", .func = benchmarkSumN },
         .{ .name = "BenchmarkAlloc", .func = benchmarkAlloc },
     };
 
-    var cli = try bench.parseCliOptions(allocator, .{
+    const options: bench.Options = try .parse(&args, .{
         .benchtime = .{ .duration_ns = 100 * std.time.ns_per_ms },
         .benchmem = true,
     });
-    defer cli.deinit();
 
-    _ = try bench.runBenchmarks(allocator, &benchmarks, cli.options);
+    _ = try bench.runBenchmarks(allocator, &benchmarks, options);
 }

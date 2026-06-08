@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const bench = @import("benchmark");
 
 const input = "The Quick Brown Fox jumps over the lazy dog. 0123456789\n" ** 64;
@@ -53,21 +54,19 @@ fn benchmarkAllocPerLine(b: *bench.B) !void {
 }
 
 pub fn main() !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.smp_allocator;
 
-    var cli = try bench.parseCliOptions(allocator, .{
+    var args = std.process.args();
+    const options: bench.Options = try .parse(&args, .{
         .benchtime = .{ .duration_ns = 250 * std.time.ns_per_ms },
         .benchmem = true,
     });
-    defer cli.deinit();
 
-    const benchmarks = [_]bench.InternalBenchmark{
+    const benchmarks = [_]bench.Spec{
         .{ .name = "BenchmarkAsciiCount/Scalar", .func = benchmarkCountScalar },
         .{ .name = "BenchmarkAsciiCount/Table", .func = benchmarkCountTable },
         .{ .name = "BenchmarkAllocPerLine", .func = benchmarkAllocPerLine },
     };
 
-    _ = try bench.runBenchmarks(allocator, &benchmarks, cli.options);
+    _ = try bench.runBenchmarks(allocator, &benchmarks, options);
 }
