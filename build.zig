@@ -36,6 +36,7 @@ pub fn addRunTest(b: *std.Build, options: BenchmarkOptions) *std.Build.Step.Run 
 fn addExample(
     b: *std.Build,
     module: *std.Build.Module,
+    filter_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     comptime name: []const u8,
@@ -50,6 +51,7 @@ fn addExample(
         }),
     });
     exe.root_module.addImport("benchmark", module);
+    exe.root_module.addImport("benchmark_filter", filter_module);
 
     const run = b.addRunArtifact(exe);
     if (b.args) |args| run.addArgs(args);
@@ -60,31 +62,45 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const filter_module = b.addModule("benchmark_filter", .{
+        .root_source_file = b.path("src/filter.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const module = b.addModule("benchmark", .{
         .root_source_file = b.path("src/benchmark.zig"),
         .target = target,
         .optimize = optimize,
     });
+    module.addImport("benchmark_filter", filter_module);
+
+    const test_module = b.createModule(.{
+        .root_source_file = b.path("src/benchmark.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_module.addImport("benchmark_filter", filter_module);
 
     const tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/benchmark.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = test_module,
     });
 
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&run_tests.step);
 
-    const run_basic = addExample(b, module, target, optimize, "basic", "examples/basic.zig");
+    const run_basic = addExample(b, module, filter_module, target, optimize, "basic", "examples/basic.zig");
     const run_basic_step = b.step("run-example", "Run the basic benchmark example");
     run_basic_step.dependOn(&run_basic.step);
 
-    const run_compare = addExample(b, module, target, optimize, "compare", "examples/compare.zig");
+    const run_compare = addExample(b, module, filter_module, target, optimize, "compare", "examples/compare.zig");
     const run_compare_step = b.step("run-compare", "Run the comparison benchmark example");
     run_compare_step.dependOn(&run_compare.step);
+
+    const run_filter_benchmark = addExample(b, module, filter_module, target, optimize, "filter-benchmark", "benchmarks/filter.zig");
+    const run_benchmark_step = b.step("run-benchmark", "Run internal benchmarks");
+    run_benchmark_step.dependOn(&run_filter_benchmark.step);
 
     const run_consumer = b.addSystemCommand(&.{ "zig", "build", "bench", "--", "--count=2", "--benchtime=100x", "--benchmem" });
     run_consumer.setCwd(b.path("examples/consumer"));

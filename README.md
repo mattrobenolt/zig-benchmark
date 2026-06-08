@@ -327,12 +327,15 @@ This repository includes:
 zig build test
 zig build run-example -- --count=2 --filter=Alloc
 zig build run-compare -Doptimize=ReleaseFast -- --count=10 --benchtime=100ms
+zig build run-benchmark -Doptimize=ReleaseFast -- --count=10 --benchtime=100ms
 zig build run-consumer
 ```
 
 `examples/consumer` is a standalone project that consumes this package through `build.zig.zon` and uses `addRunTest`.
 
 `examples/compare.zig` compares two ASCII lowercase counting implementations as `BenchmarkAsciiCount/Scalar` and `BenchmarkAsciiCount/Table`, plus an allocation-heavy benchmark to exercise `B/op` and `allocs/op`.
+
+`benchmarks/filter.zig` benchmarks this package's own glob filter matcher.
 
 The comparison example is shaped for `benchstat`:
 
