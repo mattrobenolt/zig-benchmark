@@ -1,0 +1,13 @@
+.{
+    .name = .benchmark,
+    .fingerprint = 0xb70c48fe56f62e25,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.2",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "examples",
+        "README.md",
+    },
+}
