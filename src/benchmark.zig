@@ -111,34 +111,72 @@ pub fn runModuleBenchmarks(comptime root: type, allocator: Allocator, options: O
 }
 
 fn moduleBenchmarks(comptime root: type) [countModuleBenchmarks(root)]Spec {
-    const decls = @typeInfo(root).@"struct".decls;
+    @setEvalBranchQuota(100_000);
     var benchmarks: [countModuleBenchmarks(root)]Spec = undefined;
     var i: usize = 0;
-
-    inline for (decls) |decl| {
-        if (comptime isBenchmarkName(decl.name)) {
-            benchmarks[i] = .{
-                .name = normalizedBenchmarkName(decl.name),
-                .func = @field(root, decl.name),
-            };
-            i += 1;
-        }
-    }
-
+    fillModuleBenchmarks(root, &benchmarks, &i);
     return benchmarks;
 }
 
+fn fillModuleBenchmarks(comptime root: type, benchmarks: anytype, i: *usize) void {
+    @setEvalBranchQuota(100_000);
+    const decls = @typeInfo(root).@"struct".decls;
+
+    inline for (decls) |decl| {
+        if (comptime isBenchmarkDecl(decl.name, @field(root, decl.name))) {
+            benchmarks[i.*] = .{
+                .name = normalizedBenchmarkName(decl.name),
+                .func = @field(root, decl.name),
+            };
+            i.* += 1;
+        } else if (comptime isBenchmarkModule(@field(root, decl.name))) {
+            fillModuleBenchmarks(@field(root, decl.name), benchmarks, i);
+        }
+    }
+}
+
 fn countModuleBenchmarks(comptime root: type) comptime_int {
+    @setEvalBranchQuota(100_000);
     const decls = @typeInfo(root).@"struct".decls;
     var count: comptime_int = 0;
     for (decls) |decl| {
-        if (isBenchmarkName(decl.name)) count += 1;
+        if (isBenchmarkDecl(decl.name, @field(root, decl.name))) {
+            count += 1;
+        } else if (isBenchmarkModule(@field(root, decl.name))) {
+            count += countModuleBenchmarks(@field(root, decl.name));
+        }
     }
     return count;
 }
 
+fn isBenchmarkModule(comptime value: anytype) bool {
+    if (@TypeOf(value) != type) return false;
+    return @typeInfo(value) == .@"struct";
+}
+
+fn isBenchmarkDecl(comptime name: []const u8, comptime value: anytype) bool {
+    return isBenchmarkName(name) and isBenchmarkFunction(value);
+}
+
 fn isBenchmarkName(comptime name: []const u8) bool {
     return mem.startsWith(u8, name, "Benchmark") or mem.startsWith(u8, name, "benchmark");
+}
+
+fn isBenchmarkFunction(comptime value: anytype) bool {
+    const info = @typeInfo(@TypeOf(value));
+    const fn_info = switch (info) {
+        .@"fn" => |fn_info| fn_info,
+        .pointer => |pointer| switch (@typeInfo(pointer.child)) {
+            .@"fn" => |fn_info| fn_info,
+            else => return false,
+        },
+        else => return false,
+    };
+
+    if (fn_info.params.len != 1 or fn_info.params[0].type != *B) return false;
+    const return_type = fn_info.return_type orelse return false;
+    return @typeInfo(return_type) == .error_union and
+        @typeInfo(return_type).error_union.payload == void;
 }
 
 fn normalizedBenchmarkName(comptime name: []const u8) []const u8 {
@@ -834,6 +872,30 @@ fn parseDurationNs(s: []const u8) !u64 {
         }
     }
     return error.InvalidDuration;
+}
+
+test "moduleBenchmarks discovers nested public modules" {
+    const root = struct {
+        pub fn BenchmarkRoot(_: *B) !void {}
+
+        pub const nested = struct {
+            pub fn benchmarkNested(_: *B) !void {}
+
+            pub const deeper = struct {
+                pub fn BenchmarkDeeper(_: *B) !void {}
+            };
+        };
+
+        const private_nested = struct {
+            pub fn BenchmarkPrivate(_: *B) !void {}
+        };
+    };
+
+    const benchmarks = comptime moduleBenchmarks(root);
+    try testing.expectEqual(@as(usize, 3), benchmarks.len);
+    try testing.expectEqualStrings("BenchmarkRoot", benchmarks[0].name);
+    try testing.expectEqualStrings("BenchmarkNested", benchmarks[1].name);
+    try testing.expectEqualStrings("BenchmarkDeeper", benchmarks[2].name);
 }
 
 test "predictN matches Go growth constraints" {
