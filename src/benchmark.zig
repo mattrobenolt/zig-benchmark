@@ -4,7 +4,7 @@ const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
 const time = std.time;
-const Timer = time.Timer;
+const Timer = @import("timer.zig").Timer;
 const Io = std.Io;
 const Thread = std.Thread;
 const testing = std.testing;
@@ -14,15 +14,20 @@ const builtin = @import("builtin");
 const filter = @import("benchmark_filter");
 
 const AtomicU64 = std.atomic.Value(u64);
+const has_io = @hasDecl(Io, "Clock");
+const OptionalIo = if (has_io) ?Io else void;
 
 pub const Error = error{
     BenchmarkFailed,
     BenchmarkSkipped,
     TimerUnsupported,
     InvalidMetricUnit,
+    MissingIo,
 };
 
 pub const Options = struct {
+    /// Required by measurement and runner entrypoints on Zig 0.16; unused on 0.15.
+    io: OptionalIo = if (has_io) null else {},
     benchtime: DurationOrCount = .{ .duration_ns = time.ns_per_s },
     benchmem: bool = false,
     count: usize = 1,
@@ -32,7 +37,9 @@ pub const Options = struct {
     help: bool = false,
     writer: ?*Io.Writer = null,
 
-    pub fn parse(args: *std.process.ArgIterator, defaults: Options) !Options {
+    /// Accepts either supported standard-library argument iterator. Skips argv[0].
+    /// Returned filter strings borrow the iterator's storage.
+    pub fn parse(args: anytype, defaults: Options) !Options {
         _ = args.skip();
 
         var options = defaults;
@@ -78,11 +85,11 @@ pub const Options = struct {
     }
 };
 
-fn nextFlagValue(args: *std.process.ArgIterator) ![]const u8 {
+fn nextFlagValue(args: anytype) ![]const u8 {
     return args.next() orelse error.MissingBenchmarkOptionValue;
 }
 
-fn shortFlagValue(arg: []const u8, flag: []const u8, args: *std.process.ArgIterator) !?[]const u8 {
+fn shortFlagValue(arg: []const u8, flag: []const u8, args: anytype) !?[]const u8 {
     if (!mem.startsWith(u8, arg, flag)) return null;
     const value = arg[flag.len..];
     if (value.len == 0) return @as(?[]const u8, try nextFlagValue(args));
@@ -381,6 +388,7 @@ pub const B = struct {
     };
 
     pub fn init(allocator: Allocator, func: *const fn (*B) anyerror!void, options: Options) !B {
+        if (has_io and options.io == null) return Error.MissingIo;
         const counting_allocator = try allocator.create(CountingAllocator);
         errdefer allocator.destroy(counting_allocator);
         counting_allocator.* = .init(allocator);
@@ -391,7 +399,7 @@ pub const B = struct {
             .counting_allocator = counting_allocator,
             .bench_func = func,
             .bench_time = options.benchtime,
-            .timer = try .start(),
+            .timer = if (has_io) try .start(options.io.?) else try .start(),
             .parallelism = options.parallelism,
             .writer = options.writer,
             .benchmem = options.benchmem,
@@ -497,6 +505,7 @@ pub const B = struct {
         }
 
         var sub: B = try .init(self.internal_allocator, func, .{
+            .io = if (has_io) self.timer.io else {},
             .benchtime = self.bench_time,
             .benchmem = self.benchmem,
             .parallelism = self.parallelism,
@@ -717,8 +726,12 @@ pub fn benchmark(allocator: Allocator, func: Function, options: Options) !Result
 }
 
 pub fn runBenchmarks(allocator: Allocator, benchmarks: []const Spec, options: Options) !bool {
+    if (has_io and options.io == null) return Error.MissingIo;
     var stdout_buf: [4096]u8 = undefined;
-    var stdout = std.fs.File.stdout().writer(&stdout_buf);
+    var stdout = if (has_io)
+        Io.File.stdout().writerStreaming(options.io.?, &stdout_buf)
+    else
+        std.fs.File.stdout().writerStreaming(&stdout_buf);
     const writer = options.writer orelse &stdout.interface;
     defer writer.flush() catch {};
 
@@ -912,7 +925,10 @@ test "Loop benchmark runs and records iterations" {
         }
     }.run;
 
-    var result = try benchmark(testing.allocator, bench_fn, .{ .benchtime = .{ .count = 5 } });
+    var result = try benchmark(testing.allocator, bench_fn, .{
+        .io = if (has_io) testing.io else {},
+        .benchtime = .{ .count = 5 },
+    });
     defer result.deinit(testing.allocator);
     try testing.expectEqual(@as(u64, 5), result.n);
     try testing.expectEqual(@as(f64, 5), result.extra.get("iters").?);
@@ -926,7 +942,10 @@ test "B.N style benchmark runs requested count" {
         }
     }.run;
 
-    var result = try benchmark(testing.allocator, bench_fn, .{ .benchtime = .{ .count = 7 } });
+    var result = try benchmark(testing.allocator, bench_fn, .{
+        .io = if (has_io) testing.io else {},
+        .benchtime = .{ .count = 7 },
+    });
     defer result.deinit(testing.allocator);
     try testing.expectEqual(@as(u64, 7), result.n);
 }
@@ -941,10 +960,137 @@ test "b.allocator records timed allocations" {
         }
     }.run;
 
-    var result = try benchmark(testing.allocator, bench_fn, .{ .benchtime = .{ .count = 3 } });
+    var result = try benchmark(testing.allocator, bench_fn, .{
+        .io = if (has_io) testing.io else {},
+        .benchtime = .{ .count = 3 },
+    });
     defer result.deinit(testing.allocator);
     try testing.expectEqual(@as(u64, 3), result.mem_allocs);
     try testing.expectEqual(@as(u64, 48), result.mem_bytes);
     try testing.expectEqual(@as(i64, 1), result.allocsPerOp());
     try testing.expectEqual(@as(i64, 16), result.allocedBytesPerOp());
+}
+
+const TestArgs = if (@hasDecl(std.process, "Args"))
+    std.process.Args.IteratorGeneral(.{})
+else
+    std.process.ArgIteratorGeneral(.{});
+
+test "CLI split equal and short flags preserve options" {
+    const commands = [_][]const u8{
+        "bench --count 2 --benchtime 7x --filter Alloc --parallelism 3 --benchmem --no-env",
+        "bench --count=2 --benchtime=7x --filter=Alloc --parallelism=3 --benchmem --no-env",
+        "bench -c 2 -t 7x -f Alloc -p 3 -m --no-env",
+        "bench -c2 -t7x -fAlloc -p3 -m --no-env",
+        "bench -c=2 -t=7x -f=Alloc -p=3 -m --no-env",
+    };
+    for (commands) |command| {
+        var args = try TestArgs.init(testing.allocator, command);
+        defer args.deinit();
+        const options = try Options.parse(&args, .{});
+        try testing.expectEqual(@as(usize, 2), options.count);
+        try testing.expectEqual(@as(u64, 7), options.benchtime.count);
+        try testing.expectEqualStrings("Alloc", options.filter.?);
+        try testing.expectEqual(@as(usize, 3), options.parallelism);
+        try testing.expect(options.benchmem);
+        try testing.expect(!options.emit_environment);
+    }
+}
+
+test "CLI help durations defaults and errors" {
+    var args = try TestArgs.init(testing.allocator, "bench --help --benchtime=1.5ms");
+    defer args.deinit();
+    const options = try Options.parse(&args, .{ .count = 3 });
+    try testing.expect(options.help);
+    try testing.expectEqual(@as(usize, 3), options.count);
+    try testing.expectEqual(@as(u64, 1_500_000), options.benchtime.duration_ns);
+
+    const cases = .{
+        .{ "bench --count", error.MissingBenchmarkOptionValue },
+        .{ "bench --count=0", error.InvalidCount },
+        .{ "bench --benchtime=0x", error.InvalidCount },
+        .{ "bench --unknown", error.UnknownBenchmarkOption },
+    };
+    inline for (cases) |case| {
+        var invalid = try TestArgs.init(testing.allocator, case[0]);
+        defer invalid.deinit();
+        try testing.expectError(case[1], Options.parse(&invalid, .{}));
+    }
+}
+
+test "Zig 0.16 requires explicit Io before allocating or writing" {
+    if (!has_io) return error.SkipZigTest;
+    const func = struct {
+        fn run(_: *B) !void {
+            return error.TestUnexpectedResult;
+        }
+    }.run;
+    // A failing allocator proves validation precedes allocation.
+    try testing.expectError(Error.MissingIo, B.init(.failing, func, .{}));
+    try testing.expectError(Error.MissingIo, benchmark(.failing, func, .{}));
+    var buffer: [1024]u8 = undefined;
+    var writer: Io.Writer = .fixed(&buffer);
+    try testing.expectError(Error.MissingIo, runBenchmarks(.failing, &.{}, .{
+        .writer = &writer,
+        .help = true,
+    }));
+    try testing.expectEqual(@as(usize, 0), writer.buffered().len);
+}
+
+test "nested discovery filtering counts and custom memory results" {
+    const root = struct {
+        pub const nested = struct {
+            pub fn benchmarkParent(b: *B) !void {
+                _ = try b.run("Selected", selected);
+                _ = try b.run("Excluded", excluded);
+            }
+            fn selected(b: *B) !void {
+                while (try b.loop()) {
+                    const bytes = try b.allocator.alloc(u8, 16);
+                    b.allocator.free(bytes);
+                }
+                try b.reportMetric(42, "ns/op");
+                b.setBytes(16);
+            }
+            fn excluded(_: *B) !void {
+                return error.TestUnexpectedResult;
+            }
+        };
+    };
+    var buffer: [4096]u8 = undefined;
+    var writer: Io.Writer = .fixed(&buffer);
+    try testing.expect(try runModuleBenchmarks(root, testing.allocator, .{
+        .io = if (has_io) testing.io else {},
+        .writer = &writer,
+        .emit_environment = false,
+        .filter = "^BenchmarkParent/Selected$",
+        .count = 2,
+        .benchtime = .{ .count = 7 },
+        .benchmem = true,
+    }));
+    const output = writer.buffered();
+    try testing.expectEqual(@as(usize, 2), mem.count(u8, output, "BenchmarkParent/Selected\t       7"));
+    try testing.expectEqual(@as(usize, 2), mem.count(u8, output, "42.00 ns/op"));
+    try testing.expectEqual(@as(usize, 2), mem.count(u8, output, "      16 B/op\t       1 allocs/op"));
+    try testing.expect(!mem.containsAtLeast(u8, output, 1, "Excluded"));
+}
+
+test "parallel benchmark preserves iteration accounting" {
+    const work = struct {
+        var completed: AtomicU64 = .init(0);
+        fn body(pb: *PB) !void {
+            while (pb.next()) _ = completed.fetchAdd(1, .seq_cst);
+        }
+        fn run(b: *B) !void {
+            try b.runParallel(body);
+        }
+    };
+    work.completed.store(0, .seq_cst);
+    var result = try benchmark(testing.allocator, work.run, .{
+        .io = if (has_io) testing.io else {},
+        .benchtime = .{ .count = 7 },
+    });
+    defer result.deinit(testing.allocator);
+    try testing.expectEqual(@as(u64, 7), result.n);
+    try testing.expectEqual(@as(u64, 8), work.completed.load(.seq_cst)); // warmup plus measured run
 }
