@@ -1,5 +1,7 @@
 const bench = @import("benchmark");
 
+pub const nested = @import("nested.zig");
+
 pub fn benchmarkAdd(b: *bench.B) !void {
     var x: u64 = 0;
     while (try b.loop()) x +%= 1;
