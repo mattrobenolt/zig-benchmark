@@ -33,7 +33,7 @@
         {
           devShells.default = pkgs.mkShell {
             packages = with pkgs; [
-              benchstat
+              goperf
               zig_0_16
               zls_0_16
               ziglint
