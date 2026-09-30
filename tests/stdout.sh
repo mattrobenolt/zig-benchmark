@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run from the repository root, inside either supported Nix dev shell.
+# Run from the repository root inside the Nix development shell.
 set -euo pipefail
 output=$(mktemp)
 trap 'rm -f "$output"' EXIT

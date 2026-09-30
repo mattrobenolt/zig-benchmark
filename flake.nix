@@ -31,19 +31,11 @@
           };
         in
         {
-          devShells.zig016 = pkgs.mkShell {
-            packages = with pkgs; [
-              benchstat
-              zig_0_16
-              ziglint
-              zigdoc
-            ];
-          };
           devShells.default = pkgs.mkShell {
             packages = with pkgs; [
               benchstat
-              zig_0_15
-              zls_0_15
+              zig_0_16
+              zls_0_16
               ziglint
               zigdoc
             ];

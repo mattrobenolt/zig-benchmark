@@ -2,7 +2,7 @@
   <img src="docs/assets/benchmark.svg" alt="benchmark — Go-style benchmarking for Zig">
 </p>
 
-[![Zig](https://img.shields.io/badge/Zig-0.15.2%20%7C%200.16.0-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
+[![Zig](https://img.shields.io/badge/Zig-0.16.0-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A Go-style benchmark module for Zig: predictable harnesses, stable `ns/op` output, allocation metrics, sub-benchmarks, parallel runs, and `benchstat`-friendly results without each project growing its own half-haunted benchmark runner.
@@ -101,23 +101,22 @@ zig build bench -- --count=10 --benchtime=250ms --benchmem
 
 If you need the executable without a run step, use `addTest`; it returns the `*std.Build.Step.Compile`.
 
-### Zig versions
+### Zig version
 
-Zig 0.15.2 and 0.16.0 are supported. The build helpers and benchmark functions need no
-version-specific changes. The generated runner supplies the process's I/O implementation
-on 0.16, including for nested benchmarks.
+Zig 0.16.0 is required. The generated runner supplies the I/O implementation from the process, including for nested benchmarks.
 
-Custom Zig 0.16 callers must supply `.io = init.io` in `Options`, or `std.testing.io`
-in tests. This applies to `B.init`, `benchmark`, `runBenchmarks`, and `runModuleBenchmarks`.
-The field defaults to `null` for options construction and parsing.
-If it is absent, these entrypoints return `error.MissingIo` before allocation or output.
-This also applies to custom writers and `--help`. On 0.15, the field is `void` and can be omitted.
+Custom callers supply `.io = init.io` in `Options`. Tests use `std.testing.io`.
 The library does not select a global I/O implementation.
 
-Zig 0.16 custom mains receive `std.process.Init`.
-Use `init.minimal.args.iterateAllocator(allocator)` instead of `std.process.args()`.
-`Options.parse` accepts both versions' iterators and still skips the executable name.
-Keep the iterator alive until the benchmarks finish: filter strings borrow its storage.
+`Options.io` defaults to `null` for construction and parsing.
+Measurement and runner entrypoints return `error.MissingIo` before allocation or output if `Options.io` is absent.
+This requirement also applies to custom writers and `--help`.
+
+Custom mains receive `std.process.Init`.
+The argument iterator comes from `init.minimal.args.iterateAllocator(allocator)`.
+`Options.parse` skips the executable name. Filter strings borrow the iterator storage.
+
+Keep the iterator alive until the benchmarks finish.
 
 ## Write benchmarks
 
@@ -205,8 +204,8 @@ b.resetTimer(); // zero elapsed time and allocation counters
 ```
 
 `b.elapsed()` returns measured nanoseconds, including the current interval if the timer is on.
-Zig 0.15 uses `std.time.Timer`. Zig 0.16 uses the monotonic `std.Io.Clock.awake` clock
-through the supplied `Options.io`. It subtracts complete nanosecond timestamps.
+The timer uses the monotonic `std.Io.Clock.awake` clock through the supplied `Options.io`.
+It subtracts complete nanosecond timestamps.
 
 ## Throughput and custom metrics
 
@@ -335,11 +334,9 @@ pub fn main(init: std.process.Init) !u8 {
 }
 ```
 
-This custom-main example is for Zig 0.16. On 0.15, use `pub fn main() !u8`,
-`try std.process.argsWithAllocator(allocator)` and omit `.io`.
-See `examples/consumer/src/manual.zig` for one source that supports both compilers.
+`examples/consumer/src/manual.zig` contains a complete custom runner.
 
-For one-off programmatic measurement on Zig 0.16, use `benchmark` (omit `.io` on 0.15):
+For one-off programmatic measurement, use `benchmark`:
 
 ```zig
 var result = try bench.benchmark(allocator, benchmarkThing, .{
@@ -369,8 +366,9 @@ zig build run-consumer
 It also provides `zig build manual` for a custom runner with explicit I/O.
 Its `zig build check` compiles both integration paths without execution.
 
-Use `nix develop .` for the default Zig 0.15.2 shell or `nix develop .#zig016` for Zig 0.16.0.
-Run `bash tests/stdout.sh` in either shell to check redirected output across successive invocations.
+Use `nix develop .` for the Zig 0.16.0 development shell.
+Run `bash tests/stdout.sh` in that shell to check redirected output across successive invocations.
+
 `zig build check -Dtarget=aarch64-linux` (also `x86_64-linux` or `aarch64-macos`)
 compiles the library tests, examples, and generated runner without execution of target binaries.
 

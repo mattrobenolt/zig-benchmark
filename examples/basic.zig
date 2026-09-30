@@ -31,22 +31,10 @@ fn benchmarkAlloc(b: *bench.B) !void {
     }
 }
 
-pub const main = if (@hasDecl(std.process, "Init")) main016 else main015;
-
-fn main015() !void {
-    var args = try std.process.argsWithAllocator(std.heap.smp_allocator);
-    defer args.deinit();
-    try run(&args, .{});
-}
-
-fn main016(init: std.process.Init) !void {
-    var args = try init.minimal.args.iterateAllocator(std.heap.smp_allocator);
-    defer args.deinit();
-    try run(&args, .{ .io = init.io });
-}
-
-fn run(args: anytype, defaults: bench.Options) !void {
+pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.smp_allocator;
+    var args = try init.minimal.args.iterateAllocator(allocator);
+    defer args.deinit();
 
     const benchmarks = [_]bench.Spec{
         .{ .name = "BenchmarkSum", .func = benchmarkSum },
@@ -54,10 +42,11 @@ fn run(args: anytype, defaults: bench.Options) !void {
         .{ .name = "BenchmarkAlloc", .func = benchmarkAlloc },
     };
 
-    var options = defaults;
-    options.benchtime = .{ .duration_ns = 100 * std.time.ns_per_ms };
-    options.benchmem = true;
-    options = try .parse(args, options);
+    const options: bench.Options = try .parse(&args, .{
+        .io = init.io,
+        .benchtime = .{ .duration_ns = 100 * std.time.ns_per_ms },
+        .benchmem = true,
+    });
 
     _ = try bench.runBenchmarks(allocator, &benchmarks, options);
 }

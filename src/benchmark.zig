@@ -14,20 +14,17 @@ const builtin = @import("builtin");
 const filter = @import("benchmark_filter");
 
 const AtomicU64 = std.atomic.Value(u64);
-const has_io = @hasDecl(Io, "Clock");
-const OptionalIo = if (has_io) ?Io else void;
 
 pub const Error = error{
     BenchmarkFailed,
     BenchmarkSkipped,
-    TimerUnsupported,
     InvalidMetricUnit,
     MissingIo,
 };
 
 pub const Options = struct {
-    /// Required by measurement and runner entrypoints on Zig 0.16; unused on 0.15.
-    io: OptionalIo = if (has_io) null else {},
+    /// Measurement and runner entrypoints require an explicit I/O implementation.
+    io: ?Io = null,
     benchtime: DurationOrCount = .{ .duration_ns = time.ns_per_s },
     benchmem: bool = false,
     count: usize = 1,
@@ -37,7 +34,7 @@ pub const Options = struct {
     help: bool = false,
     writer: ?*Io.Writer = null,
 
-    /// Accepts either supported standard-library argument iterator. Skips argv[0].
+    /// Accepts a standard-library argument iterator. Skips argv[0].
     /// Returned filter strings borrow the iterator's storage.
     pub fn parse(args: anytype, defaults: Options) !Options {
         _ = args.skip();
@@ -278,7 +275,7 @@ pub const Result = struct {
     }
 };
 
-const MetricMap = std.StringArrayHashMapUnmanaged(f64);
+const MetricMap = std.array_hash_map.String(f64);
 
 pub const CountingAllocator = struct {
     child: Allocator,
@@ -388,9 +385,8 @@ pub const B = struct {
     };
 
     pub fn init(allocator: Allocator, func: *const fn (*B) anyerror!void, options: Options) !B {
-        if (has_io and options.io == null) return Error.MissingIo;
+        const io = options.io orelse return Error.MissingIo;
         const counting_allocator = try allocator.create(CountingAllocator);
-        errdefer allocator.destroy(counting_allocator);
         counting_allocator.* = .init(allocator);
 
         return .{
@@ -399,7 +395,7 @@ pub const B = struct {
             .counting_allocator = counting_allocator,
             .bench_func = func,
             .bench_time = options.benchtime,
-            .timer = if (has_io) try .start(options.io.?) else try .start(),
+            .timer = .start(io),
             .parallelism = options.parallelism,
             .writer = options.writer,
             .benchmem = options.benchmem,
@@ -505,7 +501,7 @@ pub const B = struct {
         }
 
         var sub: B = try .init(self.internal_allocator, func, .{
-            .io = if (has_io) self.timer.io else {},
+            .io = self.timer.io,
             .benchtime = self.bench_time,
             .benchmem = self.benchmem,
             .parallelism = self.parallelism,
@@ -726,12 +722,9 @@ pub fn benchmark(allocator: Allocator, func: Function, options: Options) !Result
 }
 
 pub fn runBenchmarks(allocator: Allocator, benchmarks: []const Spec, options: Options) !bool {
-    if (has_io and options.io == null) return Error.MissingIo;
+    const io = options.io orelse return Error.MissingIo;
     var stdout_buf: [4096]u8 = undefined;
-    var stdout = if (has_io)
-        Io.File.stdout().writerStreaming(options.io.?, &stdout_buf)
-    else
-        std.fs.File.stdout().writerStreaming(&stdout_buf);
+    var stdout = Io.File.stdout().writerStreaming(io, &stdout_buf);
     const writer = options.writer orelse &stdout.interface;
     defer writer.flush() catch {};
 
@@ -844,7 +837,7 @@ fn prettyPrint(writer: *Io.Writer, x: f64, unit: []const u8) !void {
     return writer.print("{d:>18.7} {s}", .{ x, unit });
 }
 
-// Metric keys are owned slices; StringArrayHashMapUnmanaged.clone would only copy the slices.
+// Map clones copy key slices but do not duplicate their storage.
 fn cloneMetrics(allocator: Allocator, src: MetricMap) !MetricMap {
     var dst: MetricMap = .empty;
     errdefer {
@@ -926,7 +919,7 @@ test "Loop benchmark runs and records iterations" {
     }.run;
 
     var result = try benchmark(testing.allocator, bench_fn, .{
-        .io = if (has_io) testing.io else {},
+        .io = testing.io,
         .benchtime = .{ .count = 5 },
     });
     defer result.deinit(testing.allocator);
@@ -943,7 +936,7 @@ test "B.N style benchmark runs requested count" {
     }.run;
 
     var result = try benchmark(testing.allocator, bench_fn, .{
-        .io = if (has_io) testing.io else {},
+        .io = testing.io,
         .benchtime = .{ .count = 7 },
     });
     defer result.deinit(testing.allocator);
@@ -961,7 +954,7 @@ test "b.allocator records timed allocations" {
     }.run;
 
     var result = try benchmark(testing.allocator, bench_fn, .{
-        .io = if (has_io) testing.io else {},
+        .io = testing.io,
         .benchtime = .{ .count = 3 },
     });
     defer result.deinit(testing.allocator);
@@ -971,10 +964,7 @@ test "b.allocator records timed allocations" {
     try testing.expectEqual(@as(i64, 16), result.allocedBytesPerOp());
 }
 
-const TestArgs = if (@hasDecl(std.process, "Args"))
-    std.process.Args.IteratorGeneral(.{})
-else
-    std.process.ArgIteratorGeneral(.{});
+const TestArgs = std.process.Args.IteratorGeneral(.{});
 
 test "CLI split equal and short flags preserve options" {
     const commands = [_][]const u8{
@@ -1018,8 +1008,7 @@ test "CLI help durations defaults and errors" {
     }
 }
 
-test "Zig 0.16 requires explicit Io before allocating or writing" {
-    if (!has_io) return error.SkipZigTest;
+test "entrypoints require explicit Io before allocating or writing" {
     const func = struct {
         fn run(_: *B) !void {
             return error.TestUnexpectedResult;
@@ -1060,7 +1049,7 @@ test "nested discovery filtering counts and custom memory results" {
     var buffer: [4096]u8 = undefined;
     var writer: Io.Writer = .fixed(&buffer);
     try testing.expect(try runModuleBenchmarks(root, testing.allocator, .{
-        .io = if (has_io) testing.io else {},
+        .io = testing.io,
         .writer = &writer,
         .emit_environment = false,
         .filter = "^BenchmarkParent/Selected$",
@@ -1087,7 +1076,7 @@ test "parallel benchmark preserves iteration accounting" {
     };
     work.completed.store(0, .seq_cst);
     var result = try benchmark(testing.allocator, work.run, .{
-        .io = if (has_io) testing.io else {},
+        .io = testing.io,
         .benchtime = .{ .count = 7 },
     });
     defer result.deinit(testing.allocator);

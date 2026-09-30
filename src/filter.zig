@@ -64,7 +64,7 @@ pub fn mayMatchAnyChild(patterns: []const u8, name: []const u8) bool {
 }
 
 pub fn mayMatchChild(pattern: []const u8, name: []const u8) bool {
-    const slash = mem.indexOfScalar(u8, pattern, '/') orelse return false;
+    const slash = mem.findScalar(u8, pattern, '/') orelse return false;
     return matches(pattern[0..slash], name);
 }
 
