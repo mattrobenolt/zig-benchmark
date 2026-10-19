@@ -5,6 +5,8 @@
 [![Zig](https://img.shields.io/badge/Zig-0.16.0-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+> **Moved.** This is now part of [baskingspot/testingx](https://github.com/baskingspot/testingx), which carries the benchmark suite alongside the test runner. This repository is archived and stays as history.
+
 A Go-style benchmark module for Zig: predictable harnesses, stable `ns/op` output, allocation metrics, sub-benchmarks, parallel runs, and `benchstat`-friendly results without each project growing its own half-haunted benchmark runner.
 
 ```zig
